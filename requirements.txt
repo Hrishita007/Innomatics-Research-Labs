@@ -1,0 +1,11 @@
+streamlit
+PyMuPDF
+docx2txt
+spacy
+sentence-transformers
+rapidfuzz
+scikit-learn
+pandas
+faiss-cpu
+langchain
+openai
