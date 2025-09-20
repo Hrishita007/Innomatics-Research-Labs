@@ -1,11 +1,4 @@
-streamlit
-PyMuPDF
-docx2txt
-spacy
-sentence-transformers
-rapidfuzz
-scikit-learn
-pandas
-faiss-cpu
-langchain
-openai
+Flask==2.3.3
+PyPDF2==3.0.1
+python-docx==0.8.11
+Werkzeug==2.3.7

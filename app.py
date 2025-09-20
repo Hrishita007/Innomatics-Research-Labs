@@ -1,225 +1,241 @@
-import streamlit as st
-import pandas as pd
-import sqlite3
-import fitz
-import docx2txt
-import spacy
-import tempfile
-from sentence_transformers import SentenceTransformer, util
-import re
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_from_directory
+import os
+import json
+from datetime import datetime
+from werkzeug.utils import secure_filename
+import PyPDF2
+import docx
+from pathlib import Path
 
-# ------------------ Page Config ------------------
-st.set_page_config(page_title="Automated Resume Relevance Check System",
-                   page_icon="📄", layout="wide")
+app = Flask(__name__)
+app.secret_key = 'your-secret-key-here'
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-nlp = spacy.load("en_core_web_sm")
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+# Create necessary directories
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs('data', exist_ok=True)
 
-# ------------------ Database ------------------
-conn = sqlite3.connect("database.db", check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS evaluations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                resume_name TEXT,
-                job_name TEXT,
-                role_title TEXT,
-                score REAL,
-                verdict TEXT,
-                missing_items TEXT,
-                suggestions TEXT
-             )''')
-conn.commit()
+# Allowed file extensions
+ALLOWED_EXTENSIONS = {'pdf', 'doc', 'docx', 'txt'}
 
-# ------------------ CSS Styling ------------------
-st.markdown("""
-    <style>
-    body { background-color: #f4f8fb; font-family: 'Segoe UI', sans-serif; }
-    .main { background-color: #f4f8fb; }
-    h1, h2, h3 { color: #00695c; font-weight: 700; letter-spacing: 1px;}
-    .st-emotion-cache-1v0mbdj { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px #e0e0e0; }
-    .stFileUploader>div>div>input { border-radius: 8px; border:1px solid #bdbdbd; padding:7px; }
-    .stButton>button {
-        border-radius: 10px; background-color: #00695c; color:white; font-weight:bold; box-shadow:1px 2px 5px #b2dfdb;
-        transition: background 0.2s;
-    }
-    .stButton>button:hover { background-color: #00897b; }
-    .stDataFrame, .streamlit-expanderHeader {
-        background-color: #ffffff; border-radius: 12px; box-shadow: 0px 2px 12px #b2dfdb;
-    }
-    .high {color:white; background-color:#43a047; padding:3px 10px; border-radius:5px; font-weight:bold;}
-    .medium {color:black; background-color:#fff176; padding:3px 10px; border-radius:5px; font-weight:bold;}
-    .low {color:white; background-color:#e53935; padding:3px 10px; border-radius:5px; font-weight:bold;}
-    .st-emotion-cache-1v0mbdj { padding: 2rem 2rem 1rem 2rem; }
-    .st-emotion-cache-1v0mbdj .stMarkdown { margin-bottom: 0.5rem; }
-    .st-emotion-cache-1v0mbdj .stDataFrame { margin-top: 1.5rem; }
-    .st-emotion-cache-1v0mbdj .stDownloadButton { margin-top: 1.5rem; }
-    </style>
-""", unsafe_allow_html=True)
+# Default sections and areas
+DEFAULT_SECTIONS = {
+    'Technical': ['Software Engineering', 'Data Science', 'DevOps', 'Cybersecurity', 'AI/ML'],
+    'Business': ['Marketing', 'Sales', 'Finance', 'Operations', 'Strategy'],
+    'Creative': ['Design', 'Content Writing', 'Video Production', 'Photography', 'UX/UI'],
+    'Healthcare': ['Nursing', 'Medical', 'Pharmacy', 'Therapy', 'Administration'],
+    'Education': ['Teaching', 'Research', 'Administration', 'Curriculum', 'Training']
+}
 
-# ------------------ Utility Functions ------------------
-def extract_text(file):
-    text = ""
-    if file.name.endswith(".pdf"):
-        pdf = fitz.open(stream=file.read(), filetype="pdf")
-        for page in pdf:
-            text += page.get_text()
-    elif file.name.endswith(".docx"):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-            tmp.write(file.read())
-            text = docx2txt.process(tmp.name)
-    elif file.name.endswith(".txt"):
-        text = file.read().decode("utf-8")
-    text = "\n".join([line.strip() for line in text.splitlines() if 0 < len(line.strip()) < 100])
-    return text
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def preprocess(text):
-    doc = nlp(text.lower())
-    tokens = [t.lemma_ for t in doc if not t.is_stop and not t.is_punct]
-    return " ".join(tokens)
+def extract_text_from_file(filepath):
+    """Extract text from uploaded resume files"""
+    try:
+        if filepath.endswith('.pdf'):
+            with open(filepath, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                text = ""
+                for page in pdf_reader.pages:
+                    text += page.extract_text()
+                return text
+        elif filepath.endswith('.docx'):
+            doc = docx.Document(filepath)
+            text = ""
+            for paragraph in doc.paragraphs:
+                text += paragraph.text + "\n"
+            return text
+        elif filepath.endswith('.txt'):
+            with open(filepath, 'r', encoding='utf-8') as file:
+                return file.read()
+    except Exception as e:
+        return f"Error reading file: {str(e)}"
 
-def parse_jd(jd_text):
-    role_title = re.search(r"(?:Role|Position|Job Title)\s*:\s*(.*)", jd_text, re.IGNORECASE)
-    must_skills = re.findall(r"(?:Must[- ]Have Skills|Required Skills)\s*:\s*(.*)", jd_text, re.IGNORECASE)
-    good_skills = re.findall(r"(?:Good[- ]to[- ]Have Skills|Preferred Skills)\s*:\s*(.*)", jd_text, re.IGNORECASE)
-    qualifications = re.findall(r"(?:Qualifications|Education)\s*:\s*(.*)", jd_text, re.IGNORECASE)
+def load_data():
+    """Load resume data from JSON file"""
+    data_file = 'data/resumes.json'
+    if os.path.exists(data_file):
+        with open(data_file, 'r') as f:
+            return json.load(f)
+    return {'resumes': [], 'sections': DEFAULT_SECTIONS}
 
-    return {
-        "role_title": role_title.group(1) if role_title else "N/A",
-        "must_skills": must_skills[0].split(",") if must_skills else [],
-        "good_skills": good_skills[0].split(",") if good_skills else [],
-        "qualifications": qualifications[0].split(",") if qualifications else []
-    }
+def save_data(data):
+    """Save resume data to JSON file"""
+    data_file = 'data/resumes.json'
+    with open(data_file, 'w') as f:
+        json.dump(data, f, indent=2)
 
-def hard_match(resume_text, jd_skills):
-    missing = []
-    match_count = 0
-    for skill in jd_skills:
-        skill = skill.strip().lower()
-        if skill and skill in resume_text:
-            match_count += 1
+@app.route('/')
+def index():
+    data = load_data()
+    return render_template('index.html', 
+                         resumes=data['resumes'], 
+                         sections=data['sections'])
+
+@app.route('/upload', methods=['GET', 'POST'])
+def upload_file():
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            flash('No file selected')
+            return redirect(request.url)
+        
+        file = request.files['file']
+        if file.filename == '':
+            flash('No file selected')
+            return redirect(request.url)
+        
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            # Add timestamp to avoid conflicts
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
+            filename = timestamp + filename
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+            
+            # Extract text for preview
+            text_content = extract_text_from_file(filepath)
+            
+            # Create resume entry
+            resume_entry = {
+                'id': len(load_data()['resumes']) + 1,
+                'filename': filename,
+                'original_name': file.filename,
+                'upload_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'section': request.form.get('section', 'Unsorted'),
+                'area': request.form.get('area', 'General'),
+                'notes': request.form.get('notes', ''),
+                'text_preview': text_content[:500] + '...' if len(text_content) > 500 else text_content
+            }
+            
+            # Save to data
+            data = load_data()
+            data['resumes'].append(resume_entry)
+            save_data(data)
+            
+            flash('Resume uploaded successfully!')
+            return redirect(url_for('index'))
         else:
-            missing.append(skill)
-    score = match_count / max(len(jd_skills), 1)
-    return score, missing
+            flash('Invalid file type. Please upload PDF, DOC, DOCX, or TXT files.')
+    
+    data = load_data()
+    return render_template('upload.html', sections=data['sections'])
 
-def semantic_match(resume_text, jd_text):
-    resume_emb = embedder.encode([resume_text], convert_to_tensor=True)
-    jd_emb = embedder.encode([jd_text], convert_to_tensor=True)
-    return util.cos_sim(resume_emb, jd_emb).item()
+@app.route('/manage_sections')
+def manage_sections():
+    data = load_data()
+    return render_template('manage_sections.html', sections=data['sections'])
 
-def get_final_score(hard_score, semantic_score):
-    final_score = (0.4 * hard_score) + (0.6 * semantic_score)
-    verdict = "High" if final_score > 0.75 else "Medium" if final_score > 0.5 else "Low"
-    return round(final_score * 100, 2), verdict
+@app.route('/add_section', methods=['POST'])
+def add_section():
+    section_name = request.form.get('section_name')
+    if section_name:
+        data = load_data()
+        if section_name not in data['sections']:
+            data['sections'][section_name] = []
+            save_data(data)
+            flash(f'Section "{section_name}" added successfully!')
+        else:
+            flash('Section already exists!')
+    return redirect(url_for('manage_sections'))
 
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8')
+@app.route('/add_area', methods=['POST'])
+def add_area():
+    section_name = request.form.get('section_name')
+    area_name = request.form.get('area_name')
+    if section_name and area_name:
+        data = load_data()
+        if section_name in data['sections']:
+            if area_name not in data['sections'][section_name]:
+                data['sections'][section_name].append(area_name)
+                save_data(data)
+                flash(f'Area "{area_name}" added to section "{section_name}"!')
+            else:
+                flash('Area already exists in this section!')
+        else:
+            flash('Section does not exist!')
+    return redirect(url_for('manage_sections'))
 
-def color_verdict(val):
-    if val == "High": return 'background-color: #4CAF50; color:white; font-weight:bold'
-    elif val == "Medium": return 'background-color: #FFEB3B; color:black; font-weight:bold'
-    else: return 'background-color: #F44336; color:white; font-weight:bold'
+@app.route('/delete_section/<section_name>')
+def delete_section(section_name):
+    data = load_data()
+    if section_name in data['sections']:
+        del data['sections'][section_name]
+        save_data(data)
+        flash(f'Section "{section_name}" deleted successfully!')
+    return redirect(url_for('manage_sections'))
 
-# ------------------ UI ------------------
-st.markdown(
-    """
-    <div style="display:flex;align-items:center;gap:16px;">
-        <img src="https://img.icons8.com/ios-filled/100/00695c/resume.png" width="60"/>
-        <div>
-            <h1 style="margin-bottom:0;">Automated Resume Relevance Check</h1>
-            <p style="color:#00695c;font-size:1.1rem;margin-top:0;">Professional dashboard for placement teams & recruiters</p>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+@app.route('/delete_area/<section_name>/<area_name>')
+def delete_area(section_name, area_name):
+    data = load_data()
+    if section_name in data['sections'] and area_name in data['sections'][section_name]:
+        data['sections'][section_name].remove(area_name)
+        save_data(data)
+        flash(f'Area "{area_name}" deleted from section "{section_name}"!')
+    return redirect(url_for('manage_sections'))
 
-st.markdown("---")
+@app.route('/update_resume/<int:resume_id>', methods=['POST'])
+def update_resume(resume_id):
+    data = load_data()
+    for resume in data['resumes']:
+        if resume['id'] == resume_id:
+            resume['section'] = request.form.get('section', resume['section'])
+            resume['area'] = request.form.get('area', resume['area'])
+            resume['notes'] = request.form.get('notes', resume['notes'])
+            break
+    save_data(data)
+    return jsonify({'status': 'success'})
 
-with st.container():
-    st.markdown("#### 1. Upload Job Description & Resumes")
-    col1, col2 = st.columns(2)
-    with col1:
-        job_file = st.file_uploader(
-            "Upload Job Description (PDF/DOCX/TXT)",
-            type=["pdf", "docx", "txt"],
-            help="Upload the job description file here."
-        )
-    with col2:
-        resume_files = st.file_uploader(
-            "Upload Resumes (PDF/DOCX)",
-            type=["pdf", "docx"],
-            accept_multiple_files=True,
-            help="Upload one or more candidate resumes."
-        )
+@app.route('/delete_resume/<int:resume_id>')
+def delete_resume(resume_id):
+    data = load_data()
+    resume_to_delete = None
+    for i, resume in enumerate(data['resumes']):
+        if resume['id'] == resume_id:
+            resume_to_delete = data['resumes'].pop(i)
+            break
+    
+    if resume_to_delete:
+        # Delete the file
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], resume_to_delete['filename'])
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        save_data(data)
+        flash('Resume deleted successfully!')
+    
+    return redirect(url_for('index'))
 
-if job_file and resume_files:
-    st.markdown("#### 2. Results & Insights")
-    jd_text = extract_text(job_file)
-    jd_text_proc = preprocess(jd_text)
-    jd_info = parse_jd(jd_text)
+@app.route('/download/<filename>')
+def download_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-    st.markdown(
-        f"""
-        <div style="background:#e0f2f1;padding:1rem 1.5rem;border-radius:10px;margin-bottom:1rem;">
-            <b>Role:</b> {jd_info['role_title']}<br>
-            <b>Must-have skills:</b> {', '.join(jd_info['must_skills'])}<br>
-            <b>Good-to-have skills:</b> {', '.join(jd_info['good_skills'])}
-        </div>
-        """, unsafe_allow_html=True
-    )
+@app.route('/get_areas/<section_name>')
+def get_areas(section_name):
+    data = load_data()
+    areas = data['sections'].get(section_name, [])
+    return jsonify(areas)
 
-    results = []
-    for resume in resume_files:
-        resume_text = extract_text(resume)
-        resume_text_proc = preprocess(resume_text)
+@app.route('/view_resume/<int:resume_id>')
+def view_resume(resume_id):
+    data = load_data()
+    resume = None
+    for r in data['resumes']:
+        if r['id'] == resume_id:
+            resume = r
+            break
+    
+    if resume:
+        # Get full text content
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], resume['filename'])
+        if os.path.exists(filepath):
+            full_text = extract_text_from_file(filepath)
+            resume['full_text'] = full_text
+        
+        return render_template('view_resume.html', resume=resume, sections=data['sections'])
+    else:
+        flash('Resume not found!')
+        return redirect(url_for('index'))
 
-        hard_score, missing_items = hard_match(resume_text_proc, jd_info["must_skills"] + jd_info["good_skills"])
-        semantic_score = semantic_match(resume_text_proc, jd_text_proc)
-        final_score, verdict = get_final_score(hard_score, semantic_score)
-        suggestions = "Add missing skills: " + ", ".join(missing_items) if missing_items else "No major gaps."
-
-        c.execute("""
-        INSERT INTO evaluations (resume_name, job_name, role_title, score, verdict, missing_items, suggestions)
-        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                  (resume.name, job_file.name, jd_info["role_title"], final_score, verdict,
-                   ", ".join(missing_items), suggestions))
-        conn.commit()
-
-        results.append({
-            "Resume": resume.name,
-            "Score": final_score,
-            "Verdict": verdict,
-            "Missing Items": ", ".join(missing_items),
-            "Suggestions": suggestions
-        })
-
-    st.markdown("##### Evaluation Results")
-    df_results = pd.DataFrame(results)
-    st.dataframe(df_results.style.applymap(color_verdict, subset=['Verdict']), use_container_width=True)
-
-# ------------------ Stored Evaluations ------------------
-st.markdown("---")
-st.markdown("## 🗂 Stored Evaluations")
-with st.expander("🔎 Filters & Download CSV", expanded=True):
-    filter_job = st.text_input("Filter by Job Name / Role Title")
-    min_score, max_score = st.slider("Score Range", 0, 100, (0, 100))
-    filter_verdict = st.multiselect("Verdict", ["High","Medium","Low"], default=["High","Medium","Low"])
-    filter_missing_skill = st.text_input("Filter by Missing Skill")
-
-query = "SELECT resume_name, job_name, role_title, score, verdict, missing_items, suggestions FROM evaluations WHERE 1=1"
-params = []
-if filter_job:
-    query += " AND (job_name LIKE ? OR role_title LIKE ?)"
-    params += [f"%{filter_job}%", f"%{filter_job}%"]
-
-stored_df = pd.read_sql_query(query, conn, params=params)
-stored_df = stored_df[stored_df['score'].between(min_score, max_score)]
-stored_df = stored_df[stored_df['verdict'].isin(filter_verdict)]
-if filter_missing_skill:
-    stored_df = stored_df[stored_df['missing_items'].str.contains(filter_missing_skill, case=False, na=False)]
-
-st.dataframe(stored_df.style.applymap(color_verdict, subset=['verdict']), use_container_width=True)
-
-csv = convert_df_to_csv(stored_df)
-st.download_button("⬇️ Download Filtered Results as CSV", csv, "filtered_evaluations.csv", "text/csv")
+if __name__ == '__main__':
+    app.run(debug=True)

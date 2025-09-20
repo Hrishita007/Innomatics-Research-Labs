@@ -1,0 +1,268 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2><i class="fas fa-tachometer-alt me-2"></i>Resume Dashboard</h2>
+            <div>
+                <a href="{{ url_for('upload_file') }}" class="btn btn-primary">
+                    <i class="fas fa-plus me-2"></i>Add Resume
+                </a>
+            </div>
+        </div>
+
+        <!-- Filter Section -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <select class="form-select" id="sectionFilter" onchange="filterResumes()">
+                            <option value="">All Sections</option>
+                            {% for section in sections.keys() %}
+                            <option value="{{ section }}">{{ section }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <select class="form-select" id="areaFilter" onchange="filterResumes()">
+                            <option value="">All Areas</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <input type="text" class="form-control" id="searchFilter" placeholder="Search resumes..." onkeyup="filterResumes()">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Resume Stats -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card bg-primary text-white">
+                    <div class="card-body">
+                        <h4>{{ resumes|length }}</h4>
+                        <p class="mb-0">Total Resumes</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-success text-white">
+                    <div class="card-body">
+                        <h4>{{ sections|length }}</h4>
+                        <p class="mb-0">Sections</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-info text-white">
+                    <div class="card-body">
+                        <h4>{{ sections.values()|map('length')|sum|default(0) }}</h4>
+                        <p class="mb-0">Areas</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-warning text-white">
+                    <div class="card-body">
+                        <h4>{{ resumes|selectattr('section', 'equalto', 'Unsorted')|list|length }}</h4>
+                        <p class="mb-0">Unsorted</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Resume Grid -->
+        <div class="row" id="resumeGrid">
+            {% for resume in resumes %}
+            <div class="col-md-6 col-lg-4 mb-4 resume-item" data-section="{{ resume.section }}" data-area="{{ resume.area }}">
+                <div class="card resume-card h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h6 class="mb-0">{{ resume.original_name }}</h6>
+                        <div class="dropdown">
+                            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                <i class="fas fa-ellipsis-v"></i>
+                            </button>
+                            <ul class="dropdown-menu">
+                                <li><a class="dropdown-item" href="{{ url_for('view_resume', resume_id=resume.id) }}">
+                                    <i class="fas fa-eye me-2"></i>View
+                                </a></li>
+                                <li><a class="dropdown-item" href="{{ url_for('download_file', filename=resume.filename) }}">
+                                    <i class="fas fa-download me-2"></i>Download
+                                </a></li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item text-danger" href="{{ url_for('delete_resume', resume_id=resume.id) }}" 
+                                       onclick="return confirm('Are you sure you want to delete this resume?')">
+                                    <i class="fas fa-trash me-2"></i>Delete
+                                </a></li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-2">
+                            <span class="badge bg-primary section-badge">{{ resume.section }}</span>
+                            <span class="badge bg-secondary section-badge">{{ resume.area }}</span>
+                        </div>
+                        <p class="card-text small">{{ resume.text_preview }}</p>
+                        <small class="text-muted">Uploaded: {{ resume.upload_date }}</small>
+                    </div>
+                    <div class="card-footer">
+                        <button class="btn btn-sm btn-outline-primary" onclick="editResume({{ resume.id }})">
+                            <i class="fas fa-edit me-1"></i>Edit
+                        </button>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        {% if not resumes %}
+        <div class="text-center py-5">
+            <i class="fas fa-file-alt fa-5x text-muted mb-3"></i>
+            <h4 class="text-muted">No resumes uploaded yet</h4>
+            <p class="text-muted">Start by uploading your first resume!</p>
+            <a href="{{ url_for('upload_file') }}" class="btn btn-primary">
+                <i class="fas fa-upload me-2"></i>Upload Resume
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Edit Resume Modal -->
+<div class="modal fade" id="editModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Resume</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="editForm">
+                <div class="modal-body">
+                    <input type="hidden" id="editResumeId">
+                    <div class="mb-3">
+                        <label class="form-label">Section</label>
+                        <select class="form-select" id="editSection" onchange="updateEditAreas()">
+                            {% for section in sections.keys() %}
+                            <option value="{{ section }}">{{ section }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Area</label>
+                        <select class="form-select" id="editArea">
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Notes</label>
+                        <textarea class="form-control" id="editNotes" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const sections = {{ sections|tojson }};
+
+function filterResumes() {
+    const sectionFilter = document.getElementById('sectionFilter').value;
+    const areaFilter = document.getElementById('areaFilter').value;
+    const searchFilter = document.getElementById('searchFilter').value.toLowerCase();
+    
+    const resumeItems = document.querySelectorAll('.resume-item');
+    
+    resumeItems.forEach(item => {
+        const section = item.getAttribute('data-section');
+        const area = item.getAttribute('data-area');
+        const text = item.textContent.toLowerCase();
+        
+        const sectionMatch = !sectionFilter || section === sectionFilter;
+        const areaMatch = !areaFilter || area === areaFilter;
+        const searchMatch = !searchFilter || text.includes(searchFilter);
+        
+        if (sectionMatch && areaMatch && searchMatch) {
+            item.style.display = 'block';
+        } else {
+            item.style.display = 'none';
+        }
+    });
+}
+
+function updateAreas() {
+    const sectionFilter = document.getElementById('sectionFilter').value;
+    const areaFilter = document.getElementById('areaFilter');
+    
+    areaFilter.innerHTML = '<option value="">All Areas</option>';
+    
+    if (sectionFilter && sections[sectionFilter]) {
+        sections[sectionFilter].forEach(area => {
+            const option = document.createElement('option');
+            option.value = area;
+            option.textContent = area;
+            areaFilter.appendChild(option);
+        });
+    }
+}
+
+function editResume(resumeId) {
+    // Find resume data
+    const resumeData = {{ resumes|tojson }}.find(r => r.id === resumeId);
+    if (resumeData) {
+        document.getElementById('editResumeId').value = resumeId;
+        document.getElementById('editSection').value = resumeData.section;
+        document.getElementById('editNotes').value = resumeData.notes || '';
+        updateEditAreas();
+        document.getElementById('editArea').value = resumeData.area;
+        new bootstrap.Modal(document.getElementById('editModal')).show();
+    }
+}
+
+function updateEditAreas() {
+    const section = document.getElementById('editSection').value;
+    const areaSelect = document.getElementById('editArea');
+    
+    areaSelect.innerHTML = '';
+    
+    if (sections[section]) {
+        sections[section].forEach(area => {
+            const option = document.createElement('option');
+            option.value = area;
+            option.textContent = area;
+            areaSelect.appendChild(option);
+        });
+    }
+}
+
+document.getElementById('sectionFilter').addEventListener('change', updateAreas);
+
+document.getElementById('editForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const formData = new FormData();
+    formData.append('section', document.getElementById('editSection').value);
+    formData.append('area', document.getElementById('editArea').value);
+    formData.append('notes', document.getElementById('editNotes').value);
+    
+    const resumeId = document.getElementById('editResumeId').value;
+    
+    fetch(`/update_resume/${resumeId}`, {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            location.reload();
+        }
+    });
+});
+</script>
+{% endblock %}

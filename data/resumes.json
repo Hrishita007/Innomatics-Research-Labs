@@ -1,0 +1,40 @@
+{
+  "resumes": [],
+  "sections": {
+    "Technical": [
+      "Software Engineering",
+      "Data Science",
+      "DevOps",
+      "Cybersecurity",
+      "AI/ML"
+    ],
+    "Business": [
+      "Marketing",
+      "Sales",
+      "Finance",
+      "Operations",
+      "Strategy"
+    ],
+    "Creative": [
+      "Design",
+      "Content Writing",
+      "Video Production",
+      "Photography",
+      "UX/UI"
+    ],
+    "Healthcare": [
+      "Nursing",
+      "Medical",
+      "Pharmacy",
+      "Therapy",
+      "Administration"
+    ],
+    "Education": [
+      "Teaching",
+      "Research",
+      "Administration",
+      "Curriculum",
+      "Training"
+    ]
+  }
+}
